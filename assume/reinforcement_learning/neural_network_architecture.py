@@ -57,6 +57,8 @@ class CriticTD3(nn.Module):
 
         for h in hidden_sizes:
             layers.append(nn.Linear(input_dim, h, dtype=float_type))
+            layers.append(nn.LayerNorm(h, dtype=float_type)) # Normalize hidden layer outputs before activation
+          
             input_dim = h
         layers.append(nn.Linear(input_dim, 1, dtype=float_type))  # Output Q-value
 
@@ -78,32 +80,33 @@ class CriticTD3(nn.Module):
         """
         xu = th.cat([obs, actions], dim=1)  # Concatenate obs & actions
 
-        # Compute Q1
-        x1 = xu
-        for layer in self.q1_layers[:-1]:  # All hidden layers
-            x1 = F.relu(layer(x1))
-        x1 = self.q1_layers[-1](x1)  # Output layer (no activation)
+        # Compute Q-values for both networks
+        q1 = self._forward_q_network(xu, self.q1_layers)
+        q2 = self._forward_q_network(xu, self.q2_layers)
 
-        # Compute Q2
-        x2 = xu
-        for layer in self.q2_layers[:-1]:  # All hidden layers
-            x2 = F.relu(layer(x2))
-        x2 = self.q2_layers[-1](x2)  # Output layer (no activation)
-
-        return x1, x2
+        return q1, q2
 
     def q1_forward(self, obs, actions):
         """
         Compute only Q1 (used during actor updates).
         """
-        x = th.cat([obs, actions], dim=1)
+        xu = th.cat([obs, actions], dim=1)
 
-        for layer in self.q1_layers[:-1]:  # All hidden layers
-            x = F.relu(layer(x))
+        return self._forward_q_network(xu, self.q1_layers)
+    
+    def _forward_q_network(self, x, layers):
+        """
+        Forward pass through a Q-network with layer normalization.
+        """
+        for layer in layers[:-1]:  # All hidden layers
+            if isinstance(layer, nn.LayerNorm):
+                # Apply activation after layer normalization
+                x = F.relu(layer(x))
+            else:
+                # Apply linear transformation
+                x = layer(x)
 
-        x = self.q1_layers[-1](x)  # Output layer (no activation)
-
-        return x
+        return layers[-1](x)  # Output layer (no activation)
 
 
 class Actor(nn.Module):
@@ -157,6 +160,10 @@ class MLPActor(Actor):
         self.FC2 = nn.Linear(256, 128, dtype=float_type)
         self.FC3 = nn.Linear(128, act_dim, dtype=float_type)
 
+        # Normalize the outputs of the hidden layers before activation
+        self.LN1 = nn.LayerNorm(256, dtype=float_type)
+        self.LN2 = nn.LayerNorm(128, dtype=float_type)
+
         # Initialize weights
         self._init_weights()
 
@@ -172,8 +179,9 @@ class MLPActor(Actor):
 
     def forward(self, obs):
         """Forward pass for action prediction."""
-        x = F.relu(self.FC1(obs))
-        x = F.relu(self.FC2(x))
+        # Apply layer normalization before each hidden layer activation
+        x = F.relu(self.LN1(self.FC1(obs)))
+        x = F.relu(self.LN2(self.FC2(x)))
         x = self.activation_function(self.FC3(x))
 
         return x
